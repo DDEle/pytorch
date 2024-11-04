@@ -113,7 +113,7 @@ static void autogradBasedTransformSendToNext(
     if (!tensor.defined()) {
       return tensor;
     }
-    // if (c10::show_dispatch_trace_enabled()) {
+    // if (c10::show_dispatch_trace()) {
     //   std::cout << "wrap " << current_level << std::endl;
     // }
     return makeTensorWrapper(tensor, interpreter, is_immutable);
