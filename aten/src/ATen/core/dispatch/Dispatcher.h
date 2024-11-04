@@ -667,7 +667,7 @@ C10_ALWAYS_INLINE_UNLESS_MOBILE Return Dispatcher::call(const TypedOperatorHandl
   detail::unused_arg_(args...);  // workaround for a false-positive warning about unused parameters in gcc 5
   auto dispatchKeySet = op.operatorDef_->op.dispatchKeyExtractor()
     .template getDispatchKeySetUnboxed<Args...>(args...);
-#ifndef NDEBUG
+#if 1
   DispatchTraceNestingGuard debug_guard;
   if (show_dispatch_trace()) {
     detail::_print_dispatch_trace("[call]", toString(op.operator_name()), dispatchKeySet);
@@ -704,7 +704,7 @@ template<class Return, class... Args>
 inline Return Dispatcher::redispatch(const TypedOperatorHandle<Return (Args...)>& op, DispatchKeySet currentDispatchKeySet, Args... args) const {
   detail::unused_arg_(args...);  // workaround for a false-positive warning about unused parameters in gcc 5
   // do not use RecordFunction on redispatch
-#ifndef NDEBUG
+#if 1
   DispatchTraceNestingGuard debug_guard;
   if (show_dispatch_trace()) {
     detail::_print_dispatch_trace("[redispatch]", toString(op.operator_name()), currentDispatchKeySet);
@@ -718,7 +718,7 @@ inline void Dispatcher::callBoxed(const OperatorHandle& op, Stack* stack) const 
   // note: this doesn't need the mutex because write operations on the list keep iterators intact.
   const auto& entry = op.operatorDef_->op;
   auto dispatchKeySet = entry.dispatchKeyExtractor().getDispatchKeySetBoxed(stack);
-#ifndef NDEBUG
+#if 1
   DispatchTraceNestingGuard debug_guard;
   if (show_dispatch_trace()) {
     detail::_print_dispatch_trace("[callBoxed]", toString(op.operator_name()), dispatchKeySet);
@@ -769,7 +769,7 @@ inline void Dispatcher::callBoxedForDispatchKey(const OperatorHandle& op, Dispat
 inline void Dispatcher::redispatchBoxed(const OperatorHandle& op, DispatchKeySet dispatchKeySet, Stack* stack) const {
   // note: this doesn't need the mutex because write operations on the list keep iterators intact.
   const auto& entry = op.operatorDef_->op;
-#ifndef NDEBUG
+#if 1
   DispatchTraceNestingGuard debug_guard;
   if (show_dispatch_trace()) {
     detail::_print_dispatch_trace("[redispatchBoxed]", toString(op.operator_name()), dispatchKeySet);
