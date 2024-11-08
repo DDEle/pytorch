@@ -1,20 +1,14 @@
 #include <ATen/native/mkldnn/xpu/detail/Attr.h>
+#include <ATen/native/mkldnn/xpu/detail/Graph.h>
 #include <ATen/native/mkldnn/xpu/detail/Utils.h>
 #include <ATen/native/mkldnn/xpu/detail/oneDNN.h>
 
+#include <omp.h>
 #include <oneapi/dnnl/dnnl.hpp>
-namespace {
+
 using namespace at::native::onednn::graph;
 
-using data_type = logical_tensor::data_type;
-using layout_type = logical_tensor::layout_type;
-using dim = logical_tensor::dim;
-using dims = logical_tensor::dims;
-using RunArg = dnnl::graph::tensor;
-using RunArgs = std::vector<RunArg>;
-using LogicalTensors = std::vector<logical_tensor>;
-using engine = dnnl::engine;
-
+namespace {
 void allocate_sycl_graph_mem(
     std::vector<dnnl::graph::tensor>& tensors,
     const logical_tensor& lt,
@@ -24,7 +18,7 @@ void allocate_sycl_graph_mem(
   tensors.push_back(new_ts);
 }
 
-std::vector<partition> graph_building_and_partitioning(
+partition create_sdpa_graph_partition(
     int batch_size,
     int seq_len_q,
     int seq_len_k,
@@ -114,12 +108,30 @@ std::vector<partition> graph_building_and_partitioning(
   g.add_op(softmax);
   g.add_op(matmul_v);
   g.finalize();
-
-  return g.get_partitions();
+  auto partitions = g.get_partitions();
+  TORCH_CHECK(
+      (partitions.size() == 1) && partitions[0].is_supported(),
+      "oneDNN Graph doesn't support this fusion pattern. If you'd like its support, please submit a ticket.");
+  return partitions[0];
 }
 } // namespace
 
 namespace at::native::onednn::graph {
+
+// // Thread local data-structures are required if multiple thread-pools
+// // of a PyTorch process would be used for inference.
+// thread_local std::unordered_map<std::bitset<32>, dnnl::graph::partition>
+//     partition_map_;
+// // Compiled partition (fused kernel) cache
+// // Adopted from
+// // https://github.com/lamerman/cpp-lru-cache/blob/master/include/lrucache.hpp
+
+// thread_local std::list<key_value_pair_t> cache_items_list_;
+// thread_local std::unordered_map<std::vector<int64_t>, list_iterator_t>
+//     fused_kernel_cache_map_;
+// // cache capacity is arbitrary
+// // TODO: Add an API to manipulate cache capacity
+// thread_local size_t capacity_ = 1024;
 
 TORCH_API void gpu_float_sdpa(
     int batch_size,
@@ -149,40 +161,93 @@ TORCH_API void gpu_float_sdpa(
                                                          : data_type::undef;
   TORCH_CHECK(
       (logical_tensor_dtype != data_type::undef),
-      "Only F16 & BF16 & FP32 datatypes are currently supported");
-  // graph building and partitioning
-  std::vector<partition> partitions = graph_building_and_partitioning(
-      batch_size,
-      seq_len_q,
-      seq_len_k,
-      num_head,
-      size_per_head,
-      query,
-      key,
-      value,
-      attn_mask,
-      output,
-      logical_tensor_dtype);
+      "Only FP16 & BF16 & FP32 datatypes are currently supported");
 
-  TORCH_CHECK(partitions.size() == 1);
-  partition sdp_partition = partitions[0];
+  // cache key creation
+  // patternID is determined on the basis of the arguments provided
+  std::bitset<32> patternID;
+  if (logical_tensor_dtype == data_type::f32) {
+    // bit 3 corresponds to float32 dtype
+    patternID.set(3, 1);
+  } else {
+    // bit 2 corresponds to float16 dtype
+    patternID.set(2, 1);
+  }
+  // sdp pattern
+  patternID.set(4, 1);
+  // Refer to comments in Graph.cpp. The first 8 bits are reserved
+  int pos = 8;
+  // add more bool configs
 
-  std::vector<logical_tensor> inputs = sdp_partition.get_input_ports();
-  std::vector<logical_tensor> outputs = sdp_partition.get_output_ports();
-  compiled_partition cp = sdp_partition.compile(inputs, outputs, eng);
+  // first check cache
+  // The key has a pattern ID, as well as the shapes of input tenors
+  std::vector<int64_t> map_key;
+  map_key.reserve(1024);
+  // We use this because different thread-pools may be used
+  map_key.push_back(omp_get_max_threads());
+  map_key.push_back(static_cast<int64_t>(patternID.to_ullong()));
+  map_key.insert(map_key.end(), key.sizes().begin(), key.sizes().end());
+  map_key.insert(map_key.end(), query.sizes().begin(), query.sizes().end());
+  map_key.insert(map_key.end(), value.sizes().begin(), value.sizes().end());
+  map_key.insert(
+      map_key.end(),
+      softmax_scale1.sizes().begin(),
+      softmax_scale1.sizes().end());
+  auto iter = cache_lookup(map_key);
+
+  cp_entry cp;
+  if (iter == cache_end()) {
+    auto graph_partition_iter = partition_map_lookup(patternID);
+    if (graph_partition_iter == partition_map_end()) {
+      // partition cache no hit
+      TORCH_CHECK(
+          ((logical_tensor_dtype == data_type::f16) ||
+           (logical_tensor_dtype == data_type::f32)),
+          "Only F16 & FP32 datatypes are currently supported");
+      // graph building and partitioning
+      partition sdp_partition = create_sdpa_graph_partition(
+          batch_size,
+          seq_len_q,
+          seq_len_k,
+          num_head,
+          size_per_head,
+          query,
+          key,
+          value,
+          attn_mask,
+          output,
+          logical_tensor_dtype);
+
+      insert_in_partition_cache(patternID, sdp_partition);
+      graph_partition_iter = partition_map_lookup(patternID);
+    }
+
+    cp.partition_ = graph_partition_iter->second;
+    // partition compilation
+    compile_partition(cp, eng);
+  } else {
+    cp = iter->second->second;
+  }
 
   // partition execution
-  std::vector<dnnl::graph::tensor> inputs_ts, outputs_ts;
-  inputs_ts.reserve(inputs.size());
-  outputs_ts.reserve(outputs.size());
-  allocate_sycl_graph_mem(inputs_ts, inputs[0], eng, query);
-  allocate_sycl_graph_mem(inputs_ts, inputs[1], eng, key);
-  allocate_sycl_graph_mem(inputs_ts, inputs[2], eng, softmax_scale1);
-  allocate_sycl_graph_mem(inputs_ts, inputs[3], eng, attn_mask);
-  allocate_sycl_graph_mem(inputs_ts, inputs[4], eng, value);
-  allocate_sycl_graph_mem(inputs_ts, inputs[3], eng, value);
-  allocate_sycl_graph_mem(outputs_ts, outputs[0], eng, output);
+  auto& inputs = cp.inputLogicalTensors_;
+  auto& outputs = cp.outputLogicalTensors_;
+  cp.inputLLGATensors_.clear();
+  cp.outputLLGATensors_.clear();
+  allocate_sycl_graph_mem(cp.inputLLGATensors_, inputs[0], eng, query);
+  allocate_sycl_graph_mem(cp.inputLLGATensors_, inputs[1], eng, key);
+  allocate_sycl_graph_mem(cp.inputLLGATensors_, inputs[2], eng, softmax_scale1);
+  if (1) {
+    allocate_sycl_graph_mem(cp.inputLLGATensors_, inputs[3], eng, attn_mask);
+    allocate_sycl_graph_mem(cp.inputLLGATensors_, inputs[4], eng, value);
+  }
+  allocate_sycl_graph_mem(cp.inputLLGATensors_, inputs[3], eng, value);
+  allocate_sycl_graph_mem(cp.outputLLGATensors_, outputs[0], eng, output);
+  cp.cp_.execute(strm, cp.inputLLGATensors_, cp.outputLLGATensors_);
 
-  cp.execute(strm, inputs_ts, outputs_ts);
+  if (iter == cache_end()) {
+    // cache the compiled kernel
+    insert_in_fused_kernel_cache(map_key, cp);
+  }
 }
 } // namespace at::native::onednn::graph

@@ -2,7 +2,7 @@ import torch
 
 bs = 32
 seq_len = 128
-seq_kv = 127
+seq_kv = 128
 num_heads = 8
 head_dim = 64
 

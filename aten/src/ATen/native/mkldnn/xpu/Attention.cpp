@@ -27,6 +27,13 @@ bool check_head_dim_size_xpu(sdp::sdp_params const& params, bool debug) {
   return true;
 }
 
+bool check_no_grad(sdp::sdp_params const& params, bool debug) {
+  const bool any_inputs_require_grad = params.query.requires_grad() ||
+      params.key.requires_grad() || params.value.requires_grad();
+  const bool gradmode_enabled = at::GradMode::is_enabled();
+  return !any_inputs_require_grad || !gradmode_enabled;
+}
+
 bool use_overrideable_xpu(sdp::sdp_params const& params, bool debug) {
   constexpr auto supported_dtypes = c10::array_of<at::ScalarType>(
       at::kFloat, at::kBFloat16, at::kHalf); // double is not supported
@@ -42,7 +49,8 @@ bool use_overrideable_xpu(sdp::sdp_params const& params, bool debug) {
       sdp::check_attn_mask_shape,
       sdp::check_nonzero_sequence_lengths_dense,
       sdp::check_last_dim_stride_equals_1_dense<false /*ignore_singleton_dim*/>,
-      check_head_dim_size_xpu);
+      check_head_dim_size_xpu,
+      check_no_grad);
   for (auto& constraint : constraints) {
     if (!constraint(params, debug)) {
       return false;
