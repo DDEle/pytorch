@@ -1372,7 +1372,7 @@ endif()
 
 # Parse custom debug info
 if(DEFINED USE_CUSTOM_DEBINFO)
-  string(REPLACE ";" " " SOURCE_FILES "aten/src/ATen/native/transformers/attention.cpp;aten/src/ATen/core/Tensor.cpp;c10/core/TensorImpl.cpp")
+  string(REPLACE ";" " " SOURCE_FILES "aten/src/ATen/native/mkldnn/xpu/Attention.cpp;aten/src/ATen/native/mkldnn/xpu/detail/Attention.cpp;aten/src/ATen/core/Tensor.cpp;c10/core/TensorImpl.cpp")
   message(STATUS "Source files with custom debug infos: ${SOURCE_FILES}")
 
   string(REGEX REPLACE " +" ";" SOURCE_FILES_LIST "${SOURCE_FILES}")

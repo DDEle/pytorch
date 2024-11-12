@@ -324,7 +324,7 @@ class TestSDPAXpuOnly(NNTestCase):
     def test_fused_sdp_choice(self, device, type: str):
         batch_size, seq_len, num_heads, head_dim = 2, 128, 8, 64
         shape = SdpaShape(batch_size, num_heads, seq_len, head_dim)
-        make_tensor = partial(rand_sdpa_tensor, device=device, dtype=torch.float16, packed=True, requires_grad=True)
+        make_tensor = partial(rand_sdpa_tensor, device=device, dtype=torch.float16, packed=True, requires_grad=False) # set requires_grad to False for onednn graph
 
         qkv = make_tensor(shape, type=type)
         query, key, value = qkv.chunk(3, dim=-1)

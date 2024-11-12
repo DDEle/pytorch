@@ -63,12 +63,12 @@ using list_iterator_t = std::list<key_value_pair_t>::iterator;
 
 // Thread local data-structures are required if multiple thread-pools
 // of a PyTorch process would be used for inference.
-std::unordered_map<std::bitset<32>, dnnl::graph::partition> partition_map_;
-std::list<key_value_pair_t> cache_items_list_;
-std::unordered_map<std::vector<int64_t>, list_iterator_t>
+thread_local std::unordered_map<std::vector<int64_t>, dnnl::graph::partition> partition_map_;
+thread_local std::list<key_value_pair_t> cache_items_list_;
+thread_local std::unordered_map<std::vector<int64_t>, list_iterator_t>
     fused_kernel_cache_map_;
 // TODO: Add an API to manipulate cache capacity
-size_t capacity_ = 1024;
+thread_local size_t capacity_ = 1024;
 
 void insert_in_fused_kernel_cache(std::vector<int64_t>& map_key, cp_entry& cp) {
   cache_items_list_.push_front(key_value_pair_t(map_key, std::move(cp)));
@@ -87,11 +87,12 @@ void insert_in_fused_kernel_cache(std::vector<int64_t>& map_key, cp_entry& cp) {
 // bit 2: is fp16
 // bit 3: is fp32
 // bit 4: is sdp pattern
-// bit 5-7: N/A
+// bit 5: has attn_mask
+// bit 6-7: N/A
 // The rest of the bits depend upon the arguments provided
 // However, down the line, we might have different bitsets for different
 // patterns
-void insert_in_partition_cache(std::bitset<32>& patternID, partition& p) {
+void insert_in_partition_cache(std::vector<int64_t>& patternID, partition& p) {
   partition_map_[patternID] = std::move(p);
 }
 
@@ -100,11 +101,11 @@ void change_pos_in_list(list_iterator_t& kvpair) {
       cache_items_list_.begin(), cache_items_list_, kvpair);
 }
 
-std::unordered_map<std::bitset<32>, dnnl::graph::partition>::iterator
-partition_map_lookup(const std::bitset<32>& partition_key) {
+std::unordered_map<std::vector<int64_t>, dnnl::graph::partition>::iterator
+partition_map_lookup(const std::vector<int64_t>& partition_key) {
   return partition_map_.find(partition_key);
 }
-std::unordered_map<std::bitset<32>, dnnl::graph::partition>::iterator
+std::unordered_map<std::vector<int64_t>, dnnl::graph::partition>::iterator
 partition_map_end() {
   return partition_map_.end();
 }
