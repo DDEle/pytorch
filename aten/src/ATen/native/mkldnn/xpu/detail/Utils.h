@@ -26,6 +26,10 @@ dnnl::memory::data_type get_onednn_dtype(
     const at::Tensor& tensor,
     bool allow_undef = false);
 
+dnnl::memory::data_type get_onednn_dtype(
+    const ScalarType mat_dtype,
+    bool allow_undef = false);
+
 dnnl::memory::data_type get_onednn_dtype_include_double(
     const at::Tensor& tensor,
     bool allow_undef = false);

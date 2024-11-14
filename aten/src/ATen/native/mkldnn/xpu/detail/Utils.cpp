@@ -65,6 +65,10 @@ dnnl::memory::data_type get_onednn_dtype(
       return dnnl::memory::data_type::s8;
     case at::ScalarType::QUInt8:
       return dnnl::memory::data_type::u8;
+    case at::ScalarType::Float8_e4m3fn:
+      return dnnl::memory::data_type::f8_e4m3;
+    case at::ScalarType::Float8_e5m2:
+      return dnnl::memory::data_type::f8_e5m2;
     case at::ScalarType::Int:
       return dnnl::memory::data_type::s32;
     case at::ScalarType::Half:
@@ -78,6 +82,41 @@ dnnl::memory::data_type get_onednn_dtype(
         TORCH_CHECK(
             false,
             c10::toString(tensor.scalar_type()),
+            " is not supported in oneDNN!");
+      }
+      return dnnl::memory::data_type::undef;
+  };
+}
+
+dnnl::memory::data_type get_onednn_dtype(
+    const ScalarType mat_dtype,
+    bool allow_undef) {
+  switch (mat_dtype) {
+    case at::ScalarType::Byte:
+      return dnnl::memory::data_type::u8;
+    case at::ScalarType::Char:
+      return dnnl::memory::data_type::s8;
+    case at::ScalarType::QInt8:
+      return dnnl::memory::data_type::s8;
+    case at::ScalarType::QUInt8:
+      return dnnl::memory::data_type::u8;
+    case at::ScalarType::Float8_e4m3fn:
+      return dnnl::memory::data_type::f8_e4m3;
+    case at::ScalarType::Float8_e5m2:
+      return dnnl::memory::data_type::f8_e5m2;
+    case at::ScalarType::Int:
+      return dnnl::memory::data_type::s32;
+    case at::ScalarType::Half:
+      return dnnl::memory::data_type::f16;
+    case at::ScalarType::Float:
+      return dnnl::memory::data_type::f32;
+    case at::ScalarType::BFloat16:
+      return dnnl::memory::data_type::bf16;
+    default:
+      if (!allow_undef) {
+        TORCH_CHECK(
+            false,
+            c10::toString(mat_dtype),
             " is not supported in oneDNN!");
       }
       return dnnl::memory::data_type::undef;

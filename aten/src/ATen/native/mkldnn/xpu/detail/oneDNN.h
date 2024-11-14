@@ -16,6 +16,30 @@ TORCH_API sycl::event matmul(
     Attr attr,
     const std::vector<sycl::event>& deps = {});
 
+TORCH_API sycl::event scaled_matmul(
+    int64_t m,
+    int64_t n,
+    int64_t k,
+    void* mat1_ptr,
+    void* mat1_scale_ptr,
+    int64_t mat1_ld,
+    int64_t mat1_scale_size,
+    ScalarType mat1_dtype,
+    ScalarType scale1_dtype,
+    void* mat2_ptr,
+    void* mat2_scale_ptr,
+    int64_t mat2_ld,
+    int64_t mat2_scale_size,
+    ScalarType mat2_dtype,
+    ScalarType scale2_dtype,
+    void* bias_ptr,
+    ScalarType bias_dtype,
+    void* result_ptr,
+    void *result_scale_ptr,
+    int64_t result_ld,
+    ScalarType result_dtype,
+    const std::vector<sycl::event>& deps = {});
+
 TORCH_API sycl::event convolution(
     at::Tensor& dst,
     const at::Tensor& src,

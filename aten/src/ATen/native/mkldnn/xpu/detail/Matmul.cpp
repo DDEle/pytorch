@@ -249,4 +249,128 @@ sycl::event matmul(
   return matmul_event;
 }
 
+sycl::event scaled_matmul(
+    int64_t m,
+    int64_t n,
+    int64_t k,
+    void* mat1_ptr,
+    void* mat1_scale_ptr,
+    int64_t mat1_ld,
+    int64_t mat1_scale_size,
+    ScalarType mat1_dtype,
+    ScalarType scale1_dtype,
+    void* mat2_ptr,
+    void* mat2_scale_ptr,
+    int64_t mat2_ld,
+    int64_t mat2_scale_size,
+    ScalarType mat2_dtype,
+    ScalarType scale2_dtype,
+    void* bias_ptr,
+    ScalarType bias_dtype,
+    void* result_ptr,
+    void *result_scale_ptr,
+    int64_t result_ld,
+    ScalarType result_dtype,
+    const std::vector<sycl::event>& deps) {
+
+  at::Device cur_device = at::Device(at::kXPU, c10::xpu::current_device());
+  auto engine = GpuEngineManager::Instance().get_engine(cur_device);
+  auto stream = GpuStreamManager::Instance().get_stream();
+
+  // xpu matmul support both ab/ba shape for m2 tensor, we don't check any more
+  auto m1_dt = get_onednn_dtype(mat1_dtype);
+  auto m2_dt = get_onednn_dtype(mat2_dtype);
+  auto s1_dt = get_onednn_dtype(scale1_dtype);
+  auto s2_dt = get_onednn_dtype(scale2_dtype);
+  auto bia_dt = get_onednn_dtype(bias_dtype);
+  auto dst_dt = get_onednn_dtype(result_dtype);
+
+  dnnl::memory::desc s1_md;
+  dnnl::memory::desc m1_md;
+  dnnl::memory::desc s2_md;
+  dnnl::memory::desc m2_md;
+  dnnl::memory::desc dst_md;
+  dnnl::memory::desc bias_md;
+
+  dnnl::memory::dims m1_dims, s1_dims, m2_dims, s2_dims, dst_dims, bias_dims;
+  dnnl::memory::dims m1_strides, m2_strides, dst_strides, bias_strides;
+  m1_dims = {m, k};
+  s1_dims = {mat1_scale_size, 1};
+  m2_dims = {k, n};
+  s2_dims = {1, mat2_scale_size};
+  dst_dims = {m, n};
+
+  m1_strides = {mat1_ld, 1};
+  m2_strides = {mat2_ld, 1};
+  dst_strides = {result_ld, 1};
+
+  if (bias_ptr != nullptr) {
+    bias_dims = m2_dims;
+    bia_dt = m2_dt;
+    bias_strides = m2_strides;
+  }
+
+  std::unordered_map<int, dnnl::memory> args;
+  dnnl::matmul matmul_p;
+  dnnl::matmul::primitive_desc matmul_pd;
+
+  // STEP1: create memory desc
+  m1_md = dnnl::memory::desc(m1_dims, m1_dt, m1_strides);
+  s1_md = dnnl::memory::desc(s1_dims, s1_dt, {1});
+  m2_md = dnnl::memory::desc(m2_dims, m2_dt, m2_strides);
+  s2_md = dnnl::memory::desc(s2_dims, s2_dt, {1});
+  dst_md = dnnl::memory::desc(dst_dims, dst_dt, dst_strides);
+
+  // STEP2: creat attribute
+  dnnl::primitive_attr pattr;
+  pattr.set_scales_mask(DNNL_ARG_SRC, 0); // scales for src should be per M
+  pattr.set_scales_mask(DNNL_ARG_WEIGHTS, 1 << 1); // scales for weights should be per N
+
+  #if ONEDNN_SUPPORT_DETERMINISTIC
+    if(at::globalContext().deterministicAlgorithms() || at::globalContext().deterministicMkldnn())
+        pattr.set_deterministic(true);
+  #endif
+
+  // scratchpad
+  pattr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
+
+  // STEP3: create primitive
+  if (bias_ptr != nullptr) {
+    bias_md = dnnl::memory::desc(bias_dims, bia_dt, bias_strides);
+    matmul_pd =
+        dnnl::matmul::primitive_desc(engine, m1_md, m2_md, bias_md, dst_md, pattr);
+  } else {
+    matmul_pd = dnnl::matmul::primitive_desc(engine, m1_md, m2_md, dst_md, pattr);
+  }
+
+  matmul_p = dnnl::matmul(matmul_pd);
+
+  // STEP4: create memory
+  auto m1_m = make_onednn_memory(m1_md, engine, mat1_ptr);
+  auto s1_m = make_onednn_memory(s1_md, engine, mat1_scale_ptr);
+  auto m2_m = make_onednn_memory(m2_md, engine, mat2_ptr);
+  auto s2_m = make_onednn_memory(s2_md, engine, mat2_scale_ptr);
+  auto dst_m = make_onednn_memory(dst_md, engine, result_ptr);
+
+  size_t scratchpad_size = matmul_pd.scratchpad_desc().get_size();
+  at::Tensor scratchpad_tensor = at::empty(
+      {static_cast<int64_t>(scratchpad_size)}, c10::TensorOptions(at::kByte), std::nullopt);
+  auto scratchpad_memory = make_onednn_memory(
+      matmul_pd.scratchpad_desc(), engine, scratchpad_tensor.data_ptr());
+  args.insert({DNNL_ARG_SCRATCHPAD, scratchpad_memory});
+
+  args.insert({DNNL_ARG_SRC, m1_m});
+  args.insert({DNNL_ARG_ATTR_SCALES | DNNL_ARG_SRC, s1_m});
+  args.insert({DNNL_ARG_WEIGHTS, m2_m});
+  args.insert({DNNL_ARG_ATTR_SCALES | DNNL_ARG_WEIGHTS, s2_m});
+  args.insert({DNNL_ARG_DST, dst_m});
+  if (bias_ptr != nullptr) {
+    auto bias_m = make_onednn_memory(bias_md, engine, bias_ptr);
+    args.insert({DNNL_ARG_BIAS, bias_m});
+  }
+
+  sycl::event matmul_event = dnnl::sycl_interop::execute(matmul_p, stream, args, deps);
+
+  return matmul_event;
+  }
 } // namespace at::native::onednn
