@@ -27,20 +27,21 @@ struct cp_entry {
 struct GraphCache {
   using key_value_pair_t = std::pair<std::vector<int64_t>, cp_entry>;
   using list_iterator_t = std::list<key_value_pair_t>::iterator;
+  using partition_id_t = size_t;
 
   struct CompiledPartitionKeyHasher {
     size_t operator()(const std::vector<int64_t>& key) const {
       size_t acc = 0;
       std::hash<int64_t> hasher;
-      c10::hash_combine(0, hasher(key.size()));
+      acc = c10::hash_combine(acc, hasher(key.size()));
       for (size_t i = 0; i < key.size(); i++) {
-        c10::hash_combine(acc, hasher(key[i]));
+        acc = c10::hash_combine(acc, hasher(key[i]));
       }
       return acc;
     }
   };
 
-  std::unordered_map<std::bitset<32>, dnnl::graph::partition> partition_map_;
+  std::unordered_map<partition_id_t, dnnl::graph::partition> partition_map_;
   std::list<key_value_pair_t> cache_items_list_;
   std::unordered_map<
       std::vector<int64_t>,
@@ -72,12 +73,12 @@ struct GraphCache {
   // The rest of the bits depend upon the arguments provided
   // However, down the line, we might have different bitsets for different
   // patterns
-  partition& insert_partition_cache(std::bitset<32>& patternID, partition& p) {
+  partition& insert_partition_cache(partition_id_t& patternID, partition& p) {
     partition_map_[patternID] = std::move(p);
     return partition_map_[patternID];
   }
   std::optional<std::reference_wrapper<dnnl::graph::partition>> find_partition(
-      std::bitset<32>& patternID) {
+      partition_id_t& patternID) {
     auto iter = partition_map_.find(patternID);
     if (iter != partition_map_.end()) {
       return iter->second;

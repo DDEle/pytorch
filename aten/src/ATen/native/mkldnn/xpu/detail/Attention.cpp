@@ -198,21 +198,21 @@ TORCH_API void gpu_float_sdpa(
 
   // cache key creation
   // patternID is determined on the basis of the arguments provided
-  std::bitset<32> patternID;
+  std::bitset<32> patternID_bits;
   if (logical_tensor_dtype == data_type::f32) {
     // bit 3 corresponds to float32 dtype
-    patternID.set(3, 1);
+    patternID_bits.set(3, 1);
   } else {
     // bit 2 corresponds to float16 dtype
-    patternID.set(2, 1);
+    patternID_bits.set(2, 1);
   }
   // sdp pattern
-  patternID.set(4, 1);
+  patternID_bits.set(4, 1);
 
   // Refer to comments in Graph.cpp. The first 8 bits are reserved
   int pos = 8;
   // attn_mask
-  patternID.set(pos++, attn_mask.has_value());
+  patternID_bits.set(pos++, attn_mask.has_value());
 
   // first check cache
   // The key has a pattern ID, as well as the shapes of input tenors
@@ -220,7 +220,7 @@ TORCH_API void gpu_float_sdpa(
   map_key.reserve(1024);
   // We use this because different thread-pools may be used
   map_key.push_back(omp_get_max_threads());
-  map_key.push_back(static_cast<int64_t>(patternID.to_ullong()));
+  map_key.push_back(static_cast<int64_t>(patternID_bits.to_ullong()));
   map_key.insert(map_key.end(), query.sizes().begin(), query.sizes().end());
   map_key.insert(map_key.end(), query.strides().begin(), query.strides().end());
   map_key.insert(map_key.end(), key.sizes().begin(), key.sizes().end());
@@ -240,17 +240,18 @@ TORCH_API void gpu_float_sdpa(
         attn_mask->strides().end());
   }
 
+  // Currently hashing the shapes and strides information into the partition key
+  // because of a OneDNN Graph bug
+  GraphCache::partition_id_t patternID =
+      GraphCache::CompiledPartitionKeyHasher{}(map_key);
+
   auto cp_entry_ref = cache.find_kernel(map_key);
   if (!cp_entry_ref.has_value()) {
-    printf("cp cache miss\n");
-    fflush(stdout);
     SDPALogicalParams logical_params(
         query, key, value, attn_mask, output, logical_tensor_dtype);
 
     auto partition_ = cache.find_partition(patternID);
     if (!partition_.has_value()) {
-      printf("partition cache miss\n");
-      fflush(stdout);
       // partition cache no hit
       // graph building and partitioning
       partition sdp_partition = create_sdpa_graph_partition(
