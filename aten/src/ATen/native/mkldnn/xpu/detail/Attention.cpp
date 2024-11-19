@@ -265,10 +265,12 @@ TORCH_API void gpu_float_sdpa(
       partition_ = cache.insert_partition_cache(patternID, sdp_partition);
     }
     cp_entry sdp_cp_entry{
-        .partition_ = partition_->get(),
-        .input_logical_tensors = logical_params.get_input(),
-        .output_logical_tensors = logical_params.get_output(),
+        /*.partition_ = */ partition_->get(),
+        /*.input_logical_tensors = */ logical_params.get_input(),
+        /*.output_logical_tensors = */ logical_params.get_output(),
     };
+    std::cout<<"logical_params.get_input()[0]: "<<sdp_cp_entry.input_logical_tensors[0].get_dims()[2]<<std::endl;
+        std::cout<<"logical_params.get_output()[0]: "<<sdp_cp_entry.output_logical_tensors[0].get_dims()[2]<<std::endl;
     // partition compilation
     sdp_cp_entry.cp = sdp_cp_entry.partition_.compile(
         sdp_cp_entry.input_logical_tensors,

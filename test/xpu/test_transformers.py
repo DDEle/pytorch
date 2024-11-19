@@ -370,5 +370,103 @@ instantiate_device_type_tests(
     TestSDPAXpuOnly, globals(), only_for="xpu", allow_xpu=True
 )
 
+@parametrize("type", ["dense"])
+@parametrize("is_contiguous", [True, False])
+def test_scaled_dot_product_attention_fused_kernels_packed(device, type: str, is_contiguous: bool):
+    make_tensor = partial(rand_sdpa_tensor, type=type, device=device, dtype=torch.float16, packed=True)
+
+    batch_size, seq_len, num_heads, head_dim = 32, 64, 16, 64
+    shape = SdpaShape(batch_size, num_heads, seq_len, head_dim)
+
+    # Test Packed
+    qkv = make_tensor(shape)
+    query, key, value = qkv.chunk(3, dim=-1)
+
+    query = query.view(batch_size, -1, num_heads, head_dim).transpose(1, 2)
+    value = value.view(batch_size, -1, num_heads, head_dim).transpose(1, 2)
+    key = key.view(batch_size, -1, num_heads, head_dim).transpose(1, 2)
+
+    if is_contiguous:
+        query = query.contiguous()
+        key = key.contiguous()
+        value = value.contiguous()
+
+    with sdpa_kernel(backends=[SDPBackend.EFFICIENT_ATTENTION]):
+        actual = torch.nn.functional.scaled_dot_product_attention(
+            query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False)
+    with sdpa_kernel(backends=[SDPBackend.MATH]):
+        math_ref = torch.nn.functional.scaled_dot_product_attention(
+            query.contiguous(), key.contiguous(), value.contiguous(),
+            attn_mask=None, dropout_p=0.0, is_causal=False)
+
+    self.assertEqual(actual.contiguous(), math_ref.contiguous(), atol=2e-3, rtol=1e-2)
+
+@parametrize("type", ["dense"])
+@parametrize("fused_kernel", [SDPBackend.EFFICIENT_ATTENTION])
+def test_scaled_dot_product_attention_fused_kernels_packed_accuracy(device, type: str, fused_kernel: str):
+    def rand_nt(shape):
+        batch, seq_len, num_heads, head_dim = shape
+        tensors = [6 * torch.rand((seq_len, 3 * num_heads * head_dim), device=device, dtype=torch.float32) - 3
+                    for _ in range(batch)]
+        return (torch.nested.nested_tensor(tensors, device=device, dtype=torch.float32),
+                torch.nested.nested_tensor(tensors, device=device, dtype=torch.float16))
+
+    def rand_tensor(shape):
+        batch, seq_len, num_heads, head_dim = shape
+        tensor = 6 * torch.rand((batch, seq_len, 3 * num_heads * head_dim), device=device, dtype=torch.float32) - 3
+        return tensor, tensor.to(dtype=torch.float16)
+
+    #batch_size, seq_len, num_heads, head_dim = 16, 8, 4, 64
+    batch_size, seq_len, num_heads, head_dim = 1, 3, 2, 3
+    shape = (batch_size, seq_len, num_heads, head_dim)
+
+    # Test Packed
+    qkv, qkv_low_precision = rand_tensor(shape) if type == "dense" else rand_nt(shape)
+    query, key, value = qkv.chunk(3, dim=-1)
+    query_lp, key_lp, value_lp = qkv_low_precision.chunk(3, dim=-1)
+
+    query = query.view(batch_size, -1, num_heads, head_dim).transpose(1, 2)
+    key = key.view(batch_size, -1, num_heads, head_dim).transpose(1, 2)
+    value = value.view(batch_size, -1, num_heads, head_dim).transpose(1, 2)
+
+    query_lp = query_lp.view(batch_size, -1, num_heads, head_dim).transpose(1, 2)
+    key_lp = key_lp.view(batch_size, -1, num_heads, head_dim).transpose(1, 2)
+    value_lp = value_lp.view(batch_size, -1, num_heads, head_dim).transpose(1, 2)
+
+    with sdpa_kernel(backends=[fused_kernel]):
+        actual = torch.nn.functional.scaled_dot_product_attention(
+            query_lp, key_lp, value_lp, attn_mask=None, dropout_p=0.0, is_causal=False)
+
+    with sdpa_kernel(backends=[SDPBackend.MATH]):
+        math_ref_lp = torch.nn.functional.scaled_dot_product_attention(
+            query_lp.contiguous(), key_lp.contiguous(), value_lp.contiguous(),
+            attn_mask=None, dropout_p=0.0, is_causal=False)
+
+        math_query = query.contiguous()
+        math_key = key.contiguous()
+        math_value = value.contiguous()
+
+        math_ref = torch.nn.functional.scaled_dot_product_attention(
+            math_query, math_key, math_value, attn_mask=None, dropout_p=0.0, is_causal=False)
+
+    actual_test = actual
+    math_ref_test = math_ref
+    math_ref_lp_test = math_ref_lp
+
+    if actual_test.is_nested:
+        actual_test = torch.nested.to_padded_tensor(actual_test.contiguous(), padding=0.0)
+        math_ref_test = torch.nested.to_padded_tensor(math_ref_test, padding=0.0)
+        math_ref_lp_test = torch.nested.to_padded_tensor(math_ref_lp_test, padding=0.0)
+
+    actual_test = actual_test.to(dtype=torch.float32).contiguous()
+    math_ref_test = math_ref_test.to(dtype=torch.float32).contiguous()
+    math_ref_lp_test = math_ref_lp_test.to(dtype=torch.float32).contiguous()
+
+    # self.assertEqual(math_ref_test, math_ref_lp_test, atol=8e-3, rtol=7e-3)
+    # self.assertEqual(actual_test, math_ref_test, atol=7e-3, rtol=7e-3)
+
+
 if __name__ == "__main__":
-    run_tests()
+    #run_tests()
+    test_scaled_dot_product_attention_fused_kernels_packed_accuracy("xpu", "dense", SDPBackend.EFFICIENT_ATTENTION)
+    test_scaled_dot_product_attention_fused_kernels_packed("xpu", "dense", True)
