@@ -250,16 +250,16 @@ _scaled_dot_product_fused_attention_overrideable_xpu(
 namespace at {
 namespace native {
 
-TORCH_LIBRARY_IMPL(aten, XPU, m) {
-  m.impl("_fused_sdp_choice", &_fused_sdp_choice_xpu);
-  m.impl(
-      "_scaled_dot_product_fused_attention_overrideable",
-      &_scaled_dot_product_fused_attention_overrideable_xpu);
-  // Backward to be implemented
-  // m.impl("_scaled_dot_product_fused_attention_overrideable_backward",
-  // &_scaled_dot_product_fused_attention_overrideable_backward_xpu);
-}
-REGISTER_XPU_DISPATCH(_fused_sdp_choice_stub, &_fused_sdp_choice_xpu);
+// TORCH_LIBRARY_IMPL(aten, XPU, m) {
+//   m.impl("_fused_sdp_choice", &_fused_sdp_choice_xpu);
+//   m.impl(
+//       "_scaled_dot_product_fused_attention_overrideable",
+//       &_scaled_dot_product_fused_attention_overrideable_xpu);
+//   // Backward to be implemented
+//   // m.impl("_scaled_dot_product_fused_attention_overrideable_backward",
+//   // &_scaled_dot_product_fused_attention_overrideable_backward_xpu);
+// }
+// REGISTER_XPU_DISPATCH(_fused_sdp_choice_stub, &_fused_sdp_choice_xpu);
 
 } // namespace native
 } // namespace at
