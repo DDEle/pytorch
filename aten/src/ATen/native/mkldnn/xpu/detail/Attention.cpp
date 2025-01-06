@@ -1,5 +1,4 @@
 #include <ATen/native/mkldnn/xpu/detail/Attr.h>
-#include <ATen/native/mkldnn/xpu/detail/Graph.h>
 #include <ATen/native/mkldnn/xpu/detail/Utils.h>
 #include <ATen/native/mkldnn/xpu/detail/oneDNN.h>
 
@@ -7,6 +6,12 @@
 #include <oneapi/dnnl/dnnl.hpp>
 
 using namespace at::native::onednn;
+using logical_tensor = dnnl::graph::logical_tensor;
+using data_type = logical_tensor::data_type;
+using dims = logical_tensor::dims;
+using op = dnnl::graph::op;
+using partition = dnnl::graph::partition;
+
 namespace {
 struct SDPALogicalParams {
   enum class TensorID {
@@ -143,7 +148,7 @@ partition create_sdpa_graph_partition(
       {params.output},
       "matmul_v"};
 
-  engine::kind ekind = engine::kind::gpu;
+  constexpr auto ekind = dnnl::engine::kind::gpu;
   dnnl::graph::graph g(ekind);
   g.add_op(matmul_qk);
   g.add_op(scale_div);
@@ -192,7 +197,7 @@ void gpu_float_sdpa(
       (logical_tensor_dtype != data_type::undef),
       "Only FP16/BF16/FP32 datatypes are currently supported");
 
-  thread_local static GraphCache cache;
+  thread_local static PartitionCache cache;
 
   // cache key creation
   // patternID is determined on the basis of the arguments provided
@@ -239,43 +244,27 @@ void gpu_float_sdpa(
         attn_mask->strides().end());
   }
 
-  auto cp_entry_ref = cache.find_kernel(map_key);
-  if (!cp_entry_ref.has_value()) {
-    SDPALogicalParams logical_params(
-        query, key, value, attn_mask, output, logical_tensor_dtype);
-
-    auto partition_ = cache.find_partition(patternID);
-    if (!partition_.has_value()) {
-      // partition cache no hit
-      // graph building and partitioning
-      partition sdp_partition = create_sdpa_graph_partition(
-          batch_size,
-          seq_len_q,
-          seq_len_k,
-          num_head,
-          head_dim,
-          is_causal,
-          logical_tensor_dtype,
-          logical_params);
-      partition_ = cache.insert_partition_cache(patternID, sdp_partition);
-    }
-    cp_entry sdp_cp_entry{
-        /*.partition_ = */ partition_->get(),
-        /*.input_logical_tensors = */ logical_params.get_input(),
-        /*.output_logical_tensors = */ logical_params.get_output(),
-    };
-    // partition compilation
-    sdp_cp_entry.cp = sdp_cp_entry.partition_.compile(
-        sdp_cp_entry.input_logical_tensors,
-        sdp_cp_entry.output_logical_tensors,
-        eng);
-    cp_entry_ref = cache.insert_fused_kernel_cache(map_key, sdp_cp_entry);
+  const SDPALogicalParams logical_params(
+      query, key, value, attn_mask, output, logical_tensor_dtype);
+  auto partition_ = cache.find_partition(patternID);
+  if (!partition_.has_value()) {
+    // partition cache no hit
+    // graph building and partitioning
+    partition sdp_partition = create_sdpa_graph_partition(
+        batch_size,
+        seq_len_q,
+        seq_len_k,
+        num_head,
+        head_dim,
+        is_causal,
+        logical_tensor_dtype,
+        logical_params);
+    partition_ = cache.insert_partition_cache(patternID, sdp_partition);
   }
-
-  // partition execution
-  auto& sdp_cp_entry = cp_entry_ref->get();
-  const auto& l_inputs = sdp_cp_entry.input_logical_tensors;
-  const auto& l_outputs = sdp_cp_entry.output_logical_tensors;
+  const auto l_inputs = logical_params.get_input();
+  const auto l_outputs = logical_params.get_output();
+  // partition compilation
+  auto compiled_partition = partition_->get().compile(l_inputs, l_outputs, eng);
 
   std::vector<dnnl::graph::tensor> outputs = {
       {l_outputs[0], eng, output.data_ptr()},
@@ -290,6 +279,6 @@ void gpu_float_sdpa(
     inputs.emplace_back(l_inputs[i++], eng, attn_mask->data_ptr());
   }
   inputs.emplace_back(l_inputs[i++], eng, value.data_ptr());
-  sdp_cp_entry.cp.execute(strm, inputs, outputs);
+  compiled_partition.execute(strm, inputs, outputs);
 }
 } // namespace at::native::onednn

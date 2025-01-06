@@ -40,6 +40,15 @@ GpuEngineManager::GpuEngineManager() {
             c10::xpu::get_device_context(),
             alloc)));
   }
+
+  // Set default xpu constant_tensor_cache_capacity. Ref:
+  // https://oneapi-src.github.io/oneDNN/dev_guide_constant_tensor_cache.html
+  if (!c10::utils::get_env("ONEDNN_GRAPH_CONSTANT_TENSOR_CACHE_CAPACITY")
+           .has_value()) {
+    TORCH_INTERNAL_ASSERT(
+        dnnl_success ==
+        dnnl_graph_set_constant_tensor_cache_capacity(dnnl_gpu, 1024));
+  }
 }
 
 GpuEngineManager& GpuEngineManager::Instance() {
