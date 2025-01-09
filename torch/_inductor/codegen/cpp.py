@@ -2026,7 +2026,7 @@ class CppKernel(Kernel):
         var = self.args.input(name)
         index = self.rename_indexing(index)
         line = f"{var}[{cexpr_index(index)}]"
-        csevar = self.cse.generate(self.loads, line)
+        csevar = self.cse.generate(self.loads, line, dtype=V.graph.get_dtype(name))
         csevar.update_on_args("load", (self, name, index), {})
         return csevar
 
@@ -2628,7 +2628,7 @@ class CppVecKernel(CppKernel):
             buffer.splice(code)
             return None
         else:
-            csevar = self.cse.generate(buffer, code)
+            csevar = self.cse.generate(buffer, code, dtype=dtype)
             assert isinstance(csevar, CppCSEVariable)
             csevar.is_vec = True
             return csevar
@@ -2645,7 +2645,7 @@ class CppVecKernel(CppKernel):
         elif stride == 1:
             # load contiguously
             line = self._get_vec_load_line(var, index, dtype, self._load_mask)
-            csevar = self.cse.generate(self.loads, line)  # type: ignore[assignment]
+            csevar = self.cse.generate(self.loads, line, dtype=dtype)  # type: ignore[assignment]
         else:
             csevar = self._load_or_store_non_contiguous(var, index, dtype)  # type: ignore[assignment]
         assert isinstance(csevar, CppCSEVariable)
@@ -3336,7 +3336,7 @@ class CppTile2DKernel(CppVecKernel):
             loadbuf = f"{tile_var} + {cexpr_index(inner * self.num_elems)}"
             dtype = V.graph.get_dtype(name)
             line = self._get_vec_load_line(loadbuf, 0, dtype)  # type: ignore[arg-type]
-            csevar = self.cse.generate(self.loads, line)
+            csevar = self.cse.generate(self.loads, line, dtype=dtype)
             csevar.update_on_args("load", (self, name, index), {})
             assert isinstance(csevar, CppCSEVariable)
             csevar.is_vec = True

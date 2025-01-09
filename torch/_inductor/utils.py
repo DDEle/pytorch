@@ -2396,11 +2396,35 @@ def register_op_dtype_propagation_rules(
     )
 
 
+def is_triton_backend() -> bool:
+    # cpp backend doesnt set current device - TODO: fix
+    from torch._inductor.virtualized import V
+
+    if V.graph.current_device is None:
+        return False
+    device_str = V.graph.get_current_device_or_throw().type
+    if device_str == "cpu":
+        return config.cpu_backend == "triton"
+    elif device_str == "mps":
+        return False
+    else:
+        return config.cuda_backend == "triton"
+
+
+def is_cpp_backend() -> bool:
+    # cpp backend doesnt set current device - TODO: fix
+    from torch._inductor.virtualized import V
+
+    if V.graph.current_device is None:
+        return True
+    device_str = V.graph.get_current_device_or_throw().type
+    return device_str == "cpu" and config.cpu_backend == "cpp"
+
+
 def upcast_compute_type(dtype: torch.dtype) -> torch.dtype:
     """Maybe upcast [b]float16 to float32"""
-    if config.triton.codegen_upcast_to_fp32 and (
-        dtype in (torch.float16, torch.bfloat16)
-    ):
+    upcast_to_fp32 = is_triton_backend() and config.triton.codegen_upcast_to_fp32
+    if upcast_to_fp32 and (dtype in (torch.float16, torch.bfloat16)):
         return torch.float32
     return dtype
 

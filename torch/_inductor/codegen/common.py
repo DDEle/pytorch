@@ -35,6 +35,7 @@ import sympy
 import torch
 import torch.fx
 from torch._inductor.dtype_propagation import DtypePropagationOpsHandler
+from torch._inductor.utils import is_cpp_backend, is_triton_backend
 from torch._prims_common import ELEMENTWISE_TYPE_PROMOTION_KIND
 from torch.utils import _pytree as pytree
 from torch.utils._sympy.numbers import int_oo
@@ -1828,34 +1829,38 @@ class Kernel(CodeGen):
                     value = getattr(parent_handler, name)(*args, **kwargs)  # type: ignore[has-type]
                     dtype_handler = DtypePropagationOpsHandler()
 
+                    # cpp backend doesnt set current device - TODO: fix
+                    triton_backend = is_triton_backend()
+                    cpp_backend = is_cpp_backend()
+
+                    output_dtype = None
+                    if name == "masked":
+                        output_dtype = value.dtype
+                        # V.interpreter.current_node.meta.get(OptimizationContext.key, None).dtype
+                    elif triton_backend or cpp_backend:
+                        dtype_op = getattr(dtype_handler, name)
+                        output_dtype = dtype_op(*args, **kwargs)
+                    assert output_dtype is not None
+
                     output_idx = 0
 
                     def do_cse(v):
-                        # cpp backend doesnt set current device - TODO: fix
-                        if V.graph.current_device is not None:
-                            device_str = V.graph.get_current_device_or_throw().type
-                            triton_backend = (
-                                config.cpu_backend == "triton"
-                                if device_str == "cpu"
-                                else config.cuda_backend == "triton"
-                                if device_str != "mps"
-                                else False
-                            )
-                        else:
-                            triton_backend = False
+                        # we tree_map over the output, so we need to fetch corresponding dtype
+                        nonlocal output_idx
+                        var_dtype: torch.dtype = (
+                            output_dtype[output_idx]
+                            if isinstance(output_dtype, (list, tuple))
+                            else output_dtype
+                        )
+                        output_idx += 1
 
-                        # only triton backend tracks dtype currently
-                        if triton_backend:
-                            if name == "masked":
-                                output_dtype = value.dtype
-                            else:
-                                output_dtype = getattr(
-                                    dtype_handler,
-                                    name,
-                                )(*args, **kwargs)
-                        else:
-                            # cpp backend doesnt track dtype yet
-                            output_dtype = None
+                        # some cpp op implementations don't set the dtype
+                        if (
+                            cpp_backend
+                            and isinstance(v, CSEVariable)
+                            and v.dtype is None
+                        ):
+                            v.dtype = var_dtype
 
                         csevar = V.kernel.cse.generate(
                             V.kernel.compute,
@@ -1864,23 +1869,28 @@ class Kernel(CodeGen):
                             dtype=output_dtype,
                         )
 
-                        nonlocal output_idx
+                        csevar.update_on_args(name, args, kwargs)
+
                         if (
                             config.test_configs.runtime_triton_dtype_assert
                             and triton_backend
                         ):
                             from torch._inductor.codegen.triton import triton_type
 
-                            # we tree_map over the output, so we need to fetch corresponding dtype
-                            if isinstance(output_dtype, (list, tuple)):
-                                output_dtype = output_dtype[output_idx]
+                            V.kernel.compute.writeline(
+                                f"tl.static_assert({csevar}.dtype == {triton_type(var_dtype)})"
+                            )
+                        elif cpp_backend:
+                            from .cpp_utils import CppCSEVariable, DTYPE_TO_CPP
+
+                            assert isinstance(csevar, CppCSEVariable)
+                            c_var_type = f"decltype({csevar})"
+                            if csevar.is_vec:
+                                c_var_type = f"typename {c_var_type}::value_type"
 
                             V.kernel.compute.writeline(
-                                f"tl.static_assert({csevar}.dtype == {triton_type(output_dtype)})"
+                                f"static_assert(std::is_same_v<{c_var_type}, {DTYPE_TO_CPP[var_dtype]}>);"
                             )
-                        output_idx += 1
-
-                        csevar.update_on_args(name, args, kwargs)
 
                         return csevar
 
