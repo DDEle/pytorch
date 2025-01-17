@@ -213,14 +213,16 @@ _scaled_dot_product_fused_attention_overrideable_xpu(
   auto logsumexp = at::empty({}, opts.dtype(at::kFloat));
 
   std::optional<at::Tensor> attn_mask_fallback;
+  bool is_causal_implict = is_causal;
   if (attn_bias.has_value()) {
     attn_mask_fallback = attn_bias;
   } else {
-    if (is_causal) {
+    if (is_causal && seq_len_q != seq_len_kv) {
       auto attn_mask_fallback =
           at::ones_symint({seq_len_q, seq_len_kv}, opts.dtype(at::kBool))
               .tril();
       attn_mask_fallback = convert_boolean_attn_mask(attn_mask_fallback, opts);
+      is_causal_implict = false;
     } else {
       attn_mask_fallback = std::nullopt;
     }
@@ -237,7 +239,7 @@ _scaled_dot_product_fused_attention_overrideable_xpu(
       key,
       value,
       attn_mask_fallback,
-      false, // is_causal fallback with attn_mask for now
+      is_causal_implict,
       scale.has_value() ? scale.value() : (1.0 / std::sqrt(head_dim)),
       output);
 
